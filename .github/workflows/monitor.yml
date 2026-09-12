@@ -2,10 +2,17 @@ name: Monitor parking listings
 
 on:
   schedule:
-    # Every 30 minutes. GitHub queues cron jobs on a best-effort basis, so
-    # scheduled runs can be delayed by several minutes under load.
-    - cron: "*/30 * * * *"
+    # Runs every 30 minutes. Shifted off the hour (:17, :47) because :00 and :30
+    # suffer heavy queue congestion on GitHub Actions runners, causing delayed or dropped runs.
+    - cron: "17,47 * * * *"
   workflow_dispatch:
+  repository_dispatch:
+    types: [run-monitor, schedule]
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/monitor.yml"
 
 # Needed to commit data/state.json back — that file is the entire persistence layer.
 permissions:
@@ -19,6 +26,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -44,5 +52,6 @@ jobs:
             echo "State unchanged — nothing to commit."
           else
             git commit -m "chore: update monitor state [skip ci]"
+            git pull --rebase origin main || true
             git push
           fi

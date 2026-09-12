@@ -1,0 +1,10 @@
+{
+  "name": "bi-parking-price-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-server monitor for BI Group parking listings — price floor + low-availability alerts to Telegram, run on GitHub Actions.",
+  "scripts": {
+    "check": "bun run src/check.js"
+  }
+}

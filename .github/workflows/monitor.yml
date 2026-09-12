@@ -1,0 +1,48 @@
+name: Monitor parking listings
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub queues cron jobs on a best-effort basis, so
+    # scheduled runs can be delayed by several minutes under load.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+# Needed to commit data/state.json back — that file is the entire persistence layer.
+permissions:
+  contents: write
+
+# Never let two runs race on the same state commit.
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1"
+
+      - name: Check listings
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: bun run src/check.js
+
+      - name: Commit state
+        # Runs even when the check step failed, so a partial run still records
+        # what it learned (e.g. an object marked failing, to avoid re-alerting).
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/
+          if git diff --cached --quiet; then
+            echo "State unchanged — nothing to commit."
+          else
+            git commit -m "chore: update monitor state [skip ci]"
+            git push
+          fi

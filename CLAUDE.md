@@ -38,3 +38,13 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 - **An empty placement list is a failure, not an empty object.** A retired or mistyped-but-well-formed `realEstateUUID` returns HTTP 200 with `placements: []` (verified live) — which would flow into `availableCount = 0` and fire a false low-stock alert. `fetchAllPlacements` throws on zero placements so it takes the fetch-failure path instead.
 - **Fetch failures must never be treated as zero placements/zero availability** — that would fire a false low-stock alert on a network hiccup. Skip evaluation for that object on failure instead.
 - **First run** alerts on anything already qualifying (empty previous state = everything is "new"), not just future crossings — no special-casing needed as long as missing `data/state.json` defaults to empty sets.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as GitHub issues in `ansaganie/prices-monitor` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root (created lazily as needed). See `docs/agents/domain.md`.

@@ -19,8 +19,6 @@ const MAX_UNITS_LISTED = 15;
 
 const formatPrice = (value) => new Intl.NumberFormat("ru-RU").format(value);
 
-/** Returns true during UTC hour 7 (= 12:00 Almaty, UTC+5) — the daily digest window. */
-const isDigestTime = () => new Date().getUTCHours() === 7;
 
 /**
  * A placement's real price. `discount.stock.data[].priceWithDiscount` is what
@@ -43,11 +41,16 @@ export function priceOf(placement) {
 export const isAvailable = (placement) => placement.isSale !== false;
 
 /**
- * Build the daily digest Telegram string from per-object fetch results.
- * `objectResults` is an array of `{ object, placements }` or `{ object, error }`.
+ * Build the scan report Telegram string from per-object fetch results.
+ * `objectResults` is an array of `{ object, placements, sections }` or `{ object, error }`.
  */
-function buildDigest(objectResults) {
-  const blocks = objectResults.map(({ object, placements, error }) => {
+export function buildReport(objectResults) {
+  const hasAlerts = objectResults.some((r) => r.sections && r.sections.length > 0);
+  const title = hasAlerts
+    ? "🅿️ <b>BI Group — паркинг · Отчет о сканировании 🔔</b>"
+    : "🅿️ <b>BI Group — паркинг · Отчет о сканировании</b>";
+
+  const blocks = objectResults.map(({ object, placements, error, sections = [] }) => {
     const header = `<b>${escapeHtml(object.name)}</b>`;
     if (error) {
       return `${header}\n⚠️ Данные недоступны: <i>${escapeHtml(error.message)}</i>`;
@@ -57,7 +60,12 @@ function buildDigest(objectResults) {
     const availableCount = available.length;
 
     if (availableCount === 0) {
-      return `${header}\n• В продаже: <b>0</b>`;
+      const lines = [`${header}\n• В продаже: <b>0</b>`];
+      if (sections.length > 0) {
+        lines.push(sections.join("\n"));
+        if (object.url) lines.push(`🔗 ${object.url}`);
+      }
+      return lines.join("\n");
     }
 
     const cheapest = available.reduce((best, p) =>
@@ -72,15 +80,24 @@ function buildDigest(objectResults) {
       .join(" · ");
     const detailSuffix = details ? ` · ${details}` : "";
 
-    return (
-      `${header}\n` +
-      `• В продаже: <b>${availableCount}</b>\n` +
-      `• Мин. цена: <b>${formatPrice(priceOf(cheapest))} ₸</b>${detailSuffix}`
-    );
+    const lines = [
+      header,
+      `• В продаже: <b>${availableCount}</b>`,
+      `• Мин. цена: <b>${formatPrice(priceOf(cheapest))} ₸</b>${detailSuffix}`,
+    ];
+
+    if (sections.length > 0) {
+      lines.push(sections.join("\n"));
+      if (object.url) lines.push(`🔗 ${object.url}`);
+    }
+
+    return lines.join("\n");
   });
 
-  return `🅿️ <b>BI Group — паркинг · Ежедневная сводка</b>\n\n${blocks.join("\n\n")}`;
+  return `${title}\n\n${blocks.join("\n\n")}`;
 }
+
+export const buildDigest = buildReport;
 
 async function loadState() {
   try {
@@ -173,8 +190,7 @@ function evaluate({ object, placements, previous }) {
 async function main() {
   const state = await loadState();
   const nextObjects = { ...state.objects };
-  const blocks = [];
-  // Collected for the daily digest — one entry per object regardless of alerts.
+  // Collected for the scan report — one entry per object.
   const objectResults = [];
   let anyFailure = false;
 
@@ -191,15 +207,8 @@ async function main() {
       console.error(`[${object.id}] fetch failed: ${error.message}`);
       nextObjects[object.id] = { ...previous, failing: true };
       objectResults.push({ object, error });
-      if (!previous.failing) {
-        blocks.push(
-          `⚠️ <b>${escapeHtml(object.name)}</b>\nНе удалось получить данные: <i>${escapeHtml(error.message)}</i>`,
-        );
-      }
       continue;
     }
-
-    objectResults.push({ object, placements });
 
     const { sections, next } = evaluate({ object, placements, previous });
     nextObjects[object.id] = next;
@@ -212,23 +221,19 @@ async function main() {
     if (previous.failing) {
       sections.unshift("✅ Данные снова доступны");
     }
-    if (sections.length > 0) {
-      const link = object.url ? `\n🔗 ${object.url}` : "";
-      blocks.push(`<b>${escapeHtml(object.name)}</b>\n${sections.join("\n")}${link}`);
-    }
+
+    objectResults.push({ object, placements, sections });
   }
 
-  // Daily digest: sent as a separate message before any event-driven alert.
-  if (isDigestTime()) {
-    await sendMessage(buildDigest(objectResults));
-    console.log("Sent daily digest");
-  }
+  const report = buildReport(objectResults);
+  await sendMessage(report);
+  console.log("Sent scan report");
 
-  if (blocks.length > 0) {
-    await sendMessage(`🅿️ <b>BI Group — паркинг</b>\n\n${blocks.join("\n\n")}`);
-    console.log(`Sent alert covering ${blocks.length} object(s)`);
+  const alertCount = objectResults.filter((r) => r.sections?.length > 0).length;
+  if (alertCount > 0) {
+    console.log(`Report includes alerts for ${alertCount} object(s)`);
   } else {
-    console.log("No new triggers — staying quiet");
+    console.log("No new alert triggers in this scan");
   }
 
   await saveState({ ...state, objects: nextObjects });

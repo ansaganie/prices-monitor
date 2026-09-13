@@ -1,7 +1,7 @@
 # BI Parking Price Monitor
 
 Watches parking listings at two BI Group complexes in Astana — **Jetisu Satti** and
-**Jetisu Kerbez Comfort** — and sends a Telegram message when either:
+**Jetisu Kerbez Comfort** — sends a status report to Telegram after each scan, and highlights alerts when either:
 
 - an **available** unit's price drops to **≤ 2 200 000 ₸**, or
 - the number of **available** units for an object falls **below 20**.
@@ -9,9 +9,8 @@ Watches parking listings at two BI Group complexes in Astana — **Jetisu Satti*
 No server, no database, no npm dependencies. It's a single Bun script run by GitHub
 Actions every 30 minutes, using BI Group's own public JSON API.
 
-Alerts are **edge-triggered**: you're notified when a condition newly becomes true, or
-when it gets worse (a new unit crosses the floor, the count drops further) — not on
-every run.
+Alert details within the report are **edge-triggered**: you're alerted when a condition newly becomes true, or
+when it gets worse (a new unit crosses the floor, the count drops further).
 
 ## Setup
 

@@ -27,7 +27,7 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 - `config/objects.js` — extendable array of monitored real-estate objects (`PRICE_FLOOR`, `AVAILABILITY_THRESHOLD`, `OBJECTS`).
 - `src/bi-api.js` — `fetchAllPlacements()`: paginates the BI Group API (`pageNo` starts at **1**, not 0) and validates every returned placement actually belongs to a requested `realEstateUUIDs` entry (guards against the API silently returning the wrong inventory on a bad request key).
 - `src/telegram.js` — `sendMessage(text)` via the Telegram Bot API; throws on non-OK so misconfigured secrets fail loudly.
-- `src/check.js` — main entrypoint: fetch → evaluate → diff against previous `data/state.json` → notify on new triggers only (edge-triggered, not every run) → write updated state.
+- `src/check.js` — main entrypoint: fetch → evaluate → diff against previous `data/state.json` → send scan report to Telegram with any edge-triggered alerts → write updated state.
 - `.github/workflows/monitor.yml` — cron (`*/30 * * * *`) + `workflow_dispatch`, needs `permissions: contents: write` to commit state back.
 
 ### Non-obvious domain rules (already debugged in the spec — do not re-derive these from scratch)

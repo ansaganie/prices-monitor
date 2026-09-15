@@ -2,10 +2,16 @@ name: Monitor parking listings
 
 on:
   schedule:
-    # Runs every 30 minutes. Shifted off the hour (:17, :47) because :00 and :30
+    # Runs every 30 minutes during Astana working hours (06:00 - 20:00 UTC+05:00 -> 01:00 - 15:00 UTC).
+    # Shifted off the hour (:17, :47) because :00 and :30
     # suffer heavy queue congestion on GitHub Actions runners, causing delayed or dropped runs.
-    - cron: "17,47 * * * *"
+    - cron: "17,47 1-14 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even outside Astana working hours (06:00 - 20:00 UTC+5)"
+        type: boolean
+        default: true
   repository_dispatch:
     types: [run-monitor, schedule]
   push:
@@ -38,6 +44,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force || github.event_name == 'repository_dispatch' && '1' || '' }}
         run: bun run src/check.js
 
       - name: Commit state

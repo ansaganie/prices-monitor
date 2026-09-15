@@ -6,6 +6,7 @@
   "description": "Zero-server monitor for BI Group parking listings — price floor + low-availability alerts to Telegram, run on GitHub Actions.",
   "scripts": {
     "check": "bun run src/check.js",
-    "daemon": "bun run src/daemon.js"
+    "daemon": "bun run src/daemon.js",
+    "test": "bun test"
   }
 }

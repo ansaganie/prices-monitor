@@ -7,7 +7,7 @@ Watches parking listings at two BI Group complexes in Astana — **Jetisu Satti*
 - the number of **available** units for an object falls **below 20**.
 
 No server, no database, no npm dependencies. It's a single Bun script run by GitHub
-Actions every 30 minutes, using BI Group's own public JSON API.
+Actions every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00), using BI Group's own public JSON API.
 
 Alert details within the report are **edge-triggered**: you're alerted when a condition newly becomes true, or
 when it gets worse (a new unit crosses the floor, the count drops further).
@@ -43,6 +43,12 @@ Set `DRY_RUN=1` to print the alert to stdout instead of sending it:
 
 ```sh
 DRY_RUN=1 bun run src/check.js
+```
+
+Outside working hours (06:00–20:00 Astana time), `check.js` will skip execution. Pass `--force` or `FORCE_RUN=1` to run regardless of time:
+
+```sh
+bun run src/check.js --force
 ```
 
 ## How it works
@@ -98,8 +104,10 @@ These were each verified against live API data, and some are counter-intuitive.
   and one when it recovers — not one per run.
 - **The first run alerts on whatever already qualifies**, not only on future changes,
   since an absent `data/state.json` means "nothing seen yet".
-- **Schedule is every 30 minutes**, and GitHub runs cron jobs on a best-effort basis —
-  expect occasional delays of a few minutes.
+- **Schedule is every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00 / 01:00 to 15:00 UTC)**,
+  shifted at `:17` and `:47`. GitHub runs cron jobs on a best-effort basis — expect occasional
+  delays of a few minutes. Runs outside working hours can be triggered manually via
+  `workflow_dispatch` (with the `force` input) or with `--force` / `FORCE_RUN=1` locally.
 
 ## Keeping the workflow alive
 

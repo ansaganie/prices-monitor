@@ -4,6 +4,13 @@
 
 import { AVAILABILITY_THRESHOLD, OBJECTS, PRICE_FLOOR } from "../config/objects.js";
 import { fetchAllPlacements } from "./bi-api.js";
+import {
+  getAstanaTime,
+  isRunForced,
+  isWithinWorkingHours,
+  WORKING_HOURS_END,
+  WORKING_HOURS_START,
+} from "./schedule.js";
 import { escapeHtml, sendMessage } from "./telegram.js";
 
 const STATE_PATH = Bun.fileURLToPath(new URL("../data/state.json", import.meta.url));
@@ -188,6 +195,16 @@ function evaluate({ object, placements, previous }) {
 }
 
 async function main() {
+  const forced = isRunForced();
+  if (!forced && !isWithinWorkingHours()) {
+    const { timeString } = getAstanaTime();
+    console.log(
+      `Outside Astana working hours (${WORKING_HOURS_START}:00 - ${WORKING_HOURS_END}:00 UTC+05:00, current: ${timeString}). ` +
+        `Skipping check. (Use --force or FORCE_RUN=1 to run anyway)`,
+    );
+    return;
+  }
+
   const state = await loadState();
   const nextObjects = { ...state.objects };
   // Collected for the scan report — one entry per object.

@@ -14,8 +14,9 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 
 ## Commands (once implemented)
 
-- Run the monitor once: `bun run src/check.js`
-- No build step, no test framework, no linter configured yet — this is a single-script Bun project.
+- Run the monitor once: `bun run src/check.js` (or `bun run src/check.js --force` to bypass the 06:00–20:00 Astana working hours window)
+- Run tests: `bun test`
+- No build step, no linter configured yet — this is a single-script Bun project with built-in test runner.
 - No npm/npx in this devcontainer (Bun-only image) — use `bunx` in place of `npx` for anything that needs it (e.g. the Perplexity MCP server config).
 - Local runs need `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the environment (or a `.env` Bun loads automatically).
 
@@ -26,9 +27,10 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 **Planned file layout** (see the spec doc for full detail):
 - `config/objects.js` — extendable array of monitored real-estate objects (`PRICE_FLOOR`, `AVAILABILITY_THRESHOLD`, `OBJECTS`).
 - `src/bi-api.js` — `fetchAllPlacements()`: paginates the BI Group API (`pageNo` starts at **1**, not 0) and validates every returned placement actually belongs to a requested `realEstateUUIDs` entry (guards against the API silently returning the wrong inventory on a bad request key).
+- `src/schedule.js` — Astana timezone (UTC+05:00) helpers and working hours evaluation (06:00–20:00).
 - `src/telegram.js` — `sendMessage(text)` via the Telegram Bot API; throws on non-OK so misconfigured secrets fail loudly.
-- `src/check.js` — main entrypoint: fetch → evaluate → diff against previous `data/state.json` → send scan report to Telegram with any edge-triggered alerts → write updated state.
-- `.github/workflows/monitor.yml` — cron (`*/30 * * * *`) + `workflow_dispatch`, needs `permissions: contents: write` to commit state back.
+- `src/check.js` — main entrypoint: working hours check → fetch → evaluate → diff against previous `data/state.json` → send scan report to Telegram with any edge-triggered alerts → write updated state.
+- `.github/workflows/monitor.yml` — cron (`17,47 1-14 * * *` for Astana working hours) + `workflow_dispatch`, needs `permissions: contents: write` to commit state back.
 
 ### Non-obvious domain rules (already debugged in the spec — do not re-derive these from scratch)
 

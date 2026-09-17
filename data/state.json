@@ -1,6 +1,7 @@
 {
   "version": 1,
   "keepAliveAt": "2026-09-12T13:09:24.485Z",
+  "lastRunAt": "2026-09-17T17:56:04.198Z",
   "objects": {
     "jetisu-satti": {
       "name": "Jetisu Satti — Паркинг",
@@ -11,9 +12,9 @@
     },
     "jetisu-kerbez-comfort": {
       "name": "Jetisu Kerbez Comfort — Паркинг",
-      "availableCount": 21,
+      "availableCount": 18,
       "belowFloorUUIDs": [],
-      "lastNotifiedAvailableCount": null,
+      "lastNotifiedAvailableCount": 18,
       "failing": false
     }
   }

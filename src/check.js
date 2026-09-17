@@ -24,6 +24,10 @@ const KEEPALIVE_DAYS = 14;
 /** Cap how many units one alert lists before collapsing the rest into a count. */
 const MAX_UNITS_LISTED = 15;
 
+/** If longer than this has passed since the last run, the external-cron guarantee
+ *  has silently broken (expired PAT, cron-job.org outage, etc.) — flag it once. */
+const RUN_GAP_WARNING_MINUTES = 90;
+
 const formatPrice = (value) => new Intl.NumberFormat("ru-RU").format(value);
 
 
@@ -109,12 +113,26 @@ export const buildDigest = buildReport;
 async function loadState() {
   try {
     const state = await Bun.file(STATE_PATH).json();
-    return { version: STATE_VERSION, keepAliveAt: null, ...state, objects: state.objects ?? {} };
+    return {
+      version: STATE_VERSION,
+      keepAliveAt: null,
+      lastRunAt: null,
+      ...state,
+      objects: state.objects ?? {},
+    };
   } catch {
     // Missing or unreadable state = first run. Empty defaults make every
     // currently-qualifying unit a "new" trigger, which is the intended behaviour.
-    return { version: STATE_VERSION, keepAliveAt: null, objects: {} };
+    return { version: STATE_VERSION, keepAliveAt: null, lastRunAt: null, objects: {} };
   }
+}
+
+/** Minutes since the previous run, or null if there's no previous run to compare
+ *  against (first run, or an unparseable timestamp). */
+function minutesSinceLastRun(state) {
+  if (!state.lastRunAt) return null;
+  const previous = Date.parse(state.lastRunAt);
+  return Number.isNaN(previous) ? null : (Date.now() - previous) / 60_000;
 }
 
 function emptyObjectState(name) {
@@ -206,6 +224,7 @@ async function main() {
   }
 
   const state = await loadState();
+  const gapMinutes = minutesSinceLastRun(state);
   const nextObjects = { ...state.objects };
   // Collected for the scan report — one entry per object.
   const objectResults = [];
@@ -243,7 +262,14 @@ async function main() {
   }
 
   const report = buildReport(objectResults);
-  await sendMessage(report);
+  // The external-cron trigger is what guarantees a run every working hour (native
+  // GitHub `schedule:` is unreliable for this account — see monitor.yml). A large
+  // gap since the last run means that guarantee has silently broken.
+  const gapWarning =
+    gapMinutes !== null && gapMinutes > RUN_GAP_WARNING_MINUTES
+      ? `⚠️ Предыдущий запуск был ${Math.round(gapMinutes)} мин назад — проверьте внешний cron.\n\n`
+      : "";
+  await sendMessage(`${gapWarning}${report}`);
   console.log("Sent scan report");
 
   const alertCount = objectResults.filter((r) => r.sections?.length > 0).length;
@@ -253,7 +279,7 @@ async function main() {
     console.log("No new alert triggers in this scan");
   }
 
-  await saveState({ ...state, objects: nextObjects });
+  await saveState({ ...state, objects: nextObjects, lastRunAt: new Date().toISOString() });
 
   // Exit non-zero on failure so a broken run is visible in the Actions list;
   // the workflow still commits state because its commit step runs `if: always()`.
@@ -268,6 +294,7 @@ async function saveState(state) {
   const next = {
     version: STATE_VERSION,
     keepAliveAt: staleKeepAlive ? new Date().toISOString() : state.keepAliveAt,
+    lastRunAt: state.lastRunAt,
     objects: state.objects,
   };
   await Bun.write(STATE_PATH, `${JSON.stringify(next, null, 2)}\n`);

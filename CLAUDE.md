@@ -29,8 +29,10 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 - `src/bi-api.js` — `fetchAllPlacements()`: paginates the BI Group API (`pageNo` starts at **1**, not 0) and validates every returned placement actually belongs to a requested `realEstateUUIDs` entry (guards against the API silently returning the wrong inventory on a bad request key).
 - `src/schedule.js` — Astana timezone (UTC+05:00) helpers and working hours evaluation (06:00–20:00).
 - `src/telegram.js` — `sendMessage(text)` via the Telegram Bot API; throws on non-OK so misconfigured secrets fail loudly.
-- `src/check.js` — main entrypoint: working hours check → fetch → evaluate → diff against previous `data/state.json` → send scan report to Telegram with any edge-triggered alerts → write updated state.
-- `.github/workflows/monitor.yml` — cron (`17,47 1-14 * * *` for Astana working hours) + `workflow_dispatch`, needs `permissions: contents: write` to commit state back.
+- `src/check.js` — main entrypoint: working hours check → fetch → evaluate → diff against previous `data/state.json` → send scan report to Telegram with any edge-triggered alerts (including a run-gap watchdog, see below) → write updated state.
+- `.github/workflows/monitor.yml` — cron (`17,47 1-14 * * *` for Astana working hours) + `workflow_dispatch` + `repository_dispatch` (`run-monitor`/`schedule`/`external-cron`), needs `permissions: contents: write` to commit state back.
+
+**Native `schedule:` cron is unreliable for this account — do not re-diagnose this from scratch.** Verified via the GitHub API: only ~3-9 of the ~24-28 daily runs the cron expression implies actually fire, consistent with GitHub throttling `schedule:` events for new/low-trust accounts (anti-abuse measure). It stays wired up as free supplementary redundancy, but the real guarantee of ≥1 run/working-hour is an external cron-job.org job dispatching a `repository_dispatch` `external-cron` event on the same 30-minute cadence (`repository_dispatch` is an explicit API call, not a passive `schedule:` sweep, so it isn't subject to the same throttling). See README's "Guaranteeing ≥1 run per working-hour" section for the exact request shape and required PAT scope. `src/check.js` also tracks `lastRunAt` in state and warns in the report if a run gap exceeds 90 minutes, so a broken external trigger (e.g. expired PAT) doesn't fail silently.
 
 ### Non-obvious domain rules (already debugged in the spec — do not re-derive these from scratch)
 

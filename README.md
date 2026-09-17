@@ -105,9 +105,15 @@ These were each verified against live API data, and some are counter-intuitive.
 - **The first run alerts on whatever already qualifies**, not only on future changes,
   since an absent `data/state.json` means "nothing seen yet".
 - **Schedule is every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00 / 01:00 to 15:00 UTC)**,
-  shifted at `:17` and `:47`. GitHub runs cron jobs on a best-effort basis — expect occasional
-  delays of a few minutes. Runs outside working hours can be triggered manually via
-  `workflow_dispatch` (with the `force` input) or with `--force` / `FORCE_RUN=1` locally.
+  shifted at `:17` and `:47`. In practice, GitHub's native `schedule:` cron has been
+  unreliable for this repo — observed as low as 3 of the ~28 expected daily runs
+  actually firing, consistent with GitHub throttling `schedule:` events for new/low-trust
+  accounts. It's kept wired up as free supplementary redundancy, but the actual
+  guarantee of ≥1 run/working-hour comes from an external cron-job.org job dispatching
+  a `repository_dispatch` (`external-cron`) event on the same 30-minute cadence — see
+  "Keeping the workflow alive" below. Runs outside working hours can still be triggered
+  manually via `workflow_dispatch` (with the `force` input) or with `--force` /
+  `FORCE_RUN=1` locally.
 
 ## Keeping the workflow alive
 
@@ -119,6 +125,28 @@ the inactivity clock.
 
 If the monitor ever does go quiet for months, check the **Actions** tab for a
 "this workflow was disabled" banner and re-enable it there.
+
+### Guaranteeing ≥1 run per working-hour
+
+GitHub's own `schedule:` cron is not reliable enough on its own (see the assumption
+above), so an external service — [cron-job.org](https://cron-job.org) — pings the
+workflow directly via GitHub's REST API every 30 minutes during working hours:
+
+- `POST https://api.github.com/repos/<owner>/<repo>/dispatches`
+- Headers: `Authorization: Bearer <fine-grained PAT>`, `Accept: application/vnd.github+json`
+- Body: `{"event_type": "external-cron"}`
+- Restricted to `01:00`–`14:40` UTC (Astana's working hours), offset from GitHub's own
+  `:17`/`:47` schedule so the two trigger sources spread across ~4 time points/hour.
+
+The PAT needs only the **Contents: Read & Write** repository permission (Metadata:
+Read is auto-included), scoped to this one repo — that's what the dispatches endpoint
+requires. Enable cron-job.org's "notify on failure" email so an expired token or a
+renamed repo surfaces immediately instead of silently.
+
+As a second line of defense, `src/check.js` tracks `lastRunAt` in `data/state.json`
+and prepends a `⚠️ Предыдущий запуск был давно` warning to the next report if more
+than 90 minutes passed since the previous run — catching the case where a trigger
+fires late rather than not at all.
 
 ## Unit deep links
 

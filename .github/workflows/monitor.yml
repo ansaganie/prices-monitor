@@ -1,17 +1,6 @@
 name: Monitor parking listings
 
 on:
-  schedule:
-    # Runs every 30 minutes during Astana working hours (06:00 - 20:00 UTC+05:00 -> 01:00 - 15:00 UTC).
-    # Shifted off the hour (:17, :47) because :00 and :30
-    # suffer heavy queue congestion on GitHub Actions runners, causing delayed or dropped runs.
-    #
-    # This account's schedule triggers are unreliable well beyond that congestion note —
-    # observed as low as 3 of the ~28 expected daily runs actually firing, consistent with
-    # GitHub throttling `schedule:` events for new/low-trust accounts. `external-cron`
-    # below (an external service dispatching via the API) is the actual guarantee
-    # mechanism; this cron stays wired up only as free supplementary redundancy.
-    - cron: "17,47 1-14 * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -19,7 +8,11 @@ on:
         type: boolean
         default: true
   repository_dispatch:
-    types: [run-monitor, schedule, external-cron]
+    # cron-job.org is the sole automated trigger — see README's "Guaranteeing >=1 run
+    # per working-hour". GitHub's native `schedule:` cron was removed: it was throttled
+    # to as low as 3 of the ~28 expected daily runs for this account, and running both
+    # made cadence/debugging unpredictable once cron-job.org proved reliable on its own.
+    types: [external-cron]
   push:
     branches:
       - main

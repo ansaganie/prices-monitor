@@ -98,22 +98,23 @@ These were each verified against live API data, and some are counter-intuitive.
   `placementStatusName`, which records booking *history* rather than current
   availability: Kerbez has **zero** units marked `Свободно` despite 74 being on sale,
   so a status-based rule would fire a permanent, wrong low-stock alert there.
-- **Fetch failures are never counted as zero.** If an object can't be fetched, it's
-  skipped for that run and its previous numbers are kept, so a network hiccup can't
-  masquerade as "everything sold out". You get one alert when an object starts failing
-  and one when it recovers — not one per run.
+- **Fetch failures are never counted as zero, and never fail the Actions run.** If an
+  object can't be fetched, it's skipped for that run and its previous numbers are kept,
+  so a network hiccup can't masquerade as "everything sold out". The failure is
+  reported inline in the Telegram scan report (`⚠️ Данные недоступны: ...`) — the
+  script absorbs it rather than exiting non-zero, so the Actions run still shows green.
+  You get one alert when an object starts failing and one when it recovers — not one
+  per run.
 - **The first run alerts on whatever already qualifies**, not only on future changes,
   since an absent `data/state.json` means "nothing seen yet".
-- **Schedule is every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00 / 01:00 to 15:00 UTC)**,
-  shifted at `:17` and `:47`. In practice, GitHub's native `schedule:` cron has been
-  unreliable for this repo — observed as low as 3 of the ~28 expected daily runs
-  actually firing, consistent with GitHub throttling `schedule:` events for new/low-trust
-  accounts. It's kept wired up as free supplementary redundancy, but the actual
-  guarantee of ≥1 run/working-hour comes from an external cron-job.org job dispatching
-  a `repository_dispatch` (`external-cron`) event on the same 30-minute cadence — see
-  "Keeping the workflow alive" below. Runs outside working hours can still be triggered
-  manually via `workflow_dispatch` (with the `force` input) or with `--force` /
-  `FORCE_RUN=1` locally.
+- **Schedule is every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00 / 01:00 to 15:00 UTC)**.
+  cron-job.org is the *only* automated trigger — see "Keeping the workflow alive" below.
+  GitHub's native `schedule:` cron was tried and removed: it was unreliable for this
+  repo (observed as low as 3 of the ~28 expected daily runs actually firing, consistent
+  with GitHub throttling `schedule:` events for new/low-trust accounts), and running it
+  alongside cron-job.org was redundant once cron-job.org proved reliable on its own.
+  Runs outside working hours can still be triggered manually via `workflow_dispatch`
+  (with the `force` input) or with `--force` / `FORCE_RUN=1` locally.
 
 ## Keeping the workflow alive
 
@@ -128,9 +129,10 @@ If the monitor ever does go quiet for months, check the **Actions** tab for a
 
 ### Guaranteeing ≥1 run per working-hour
 
-GitHub's own `schedule:` cron is not reliable enough on its own (see the assumption
-above), so an external service — [cron-job.org](https://cron-job.org) — pings the
-workflow directly via GitHub's REST API every 30 minutes during working hours:
+GitHub's own `schedule:` cron proved unreliable for this repo (see the assumption
+above) and has been removed — an external service, [cron-job.org](https://cron-job.org),
+is now the *only* automated trigger. It pings the workflow directly via GitHub's REST
+API every 30 minutes during working hours:
 
 - `POST https://api.github.com/repos/<owner>/<repo>/dispatches`
 - Headers: `Authorization: Bearer <fine-grained PAT>`, `Accept: application/vnd.github+json`

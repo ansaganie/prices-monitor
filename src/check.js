@@ -228,7 +228,6 @@ async function main() {
   const nextObjects = { ...state.objects };
   // Collected for the scan report — one entry per object.
   const objectResults = [];
-  let anyFailure = false;
 
   for (const object of OBJECTS) {
     const previous = { ...emptyObjectState(object.name), ...(state.objects[object.id] ?? {}) };
@@ -239,7 +238,6 @@ async function main() {
     } catch (error) {
       // Never let a fetch failure look like "0 available" — that would fire a
       // false low-stock alert. Keep the previous numbers and skip evaluation.
-      anyFailure = true;
       console.error(`[${object.id}] fetch failed: ${error.message}`);
       nextObjects[object.id] = { ...previous, failing: true };
       objectResults.push({ object, error });
@@ -280,10 +278,6 @@ async function main() {
   }
 
   await saveState({ ...state, objects: nextObjects, lastRunAt: new Date().toISOString() });
-
-  // Exit non-zero on failure so a broken run is visible in the Actions list;
-  // the workflow still commits state because its commit step runs `if: always()`.
-  if (anyFailure) process.exit(1);
 }
 
 async function saveState(state) {

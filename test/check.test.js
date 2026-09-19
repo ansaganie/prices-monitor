@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { AVAILABILITY_THRESHOLD, PRICE_FLOOR } from "../config/objects.js";
-import { buildReport, evaluate, isAvailable, priceOf } from "../src/check.js";
+import {
+  buildReport,
+  evaluate,
+  isAvailabilityAlertSuppressed,
+  isAvailable,
+  isChangeAlert,
+  priceOf,
+} from "../src/check.js";
 
 const placement = (overrides = {}) => ({
   uuid: "u1",
@@ -131,6 +138,76 @@ describe("check", () => {
       const report = buildReport([{ object, error: new Error("HTTP 500"), changed: true }]);
       expect(report).toContain("Данные недоступны");
       expect(report).toContain("HTTP 500");
+    });
+  });
+
+  describe("availability alert suppression", () => {
+    it("isAvailabilityAlertSuppressed reads SKIP_AVAILABILITY_ALERT", () => {
+      expect(isAvailabilityAlertSuppressed({ SKIP_AVAILABILITY_ALERT: "1" })).toBe(true);
+      expect(isAvailabilityAlertSuppressed({ SKIP_AVAILABILITY_ALERT: "true" })).toBe(true);
+      expect(isAvailabilityAlertSuppressed({})).toBe(false);
+      expect(isAvailabilityAlertSuppressed({ SKIP_AVAILABILITY_ALERT: "0" })).toBe(false);
+    });
+
+    describe("isChangeAlert", () => {
+      const countCrossing = evaluate({
+        placements: Array.from({ length: AVAILABILITY_THRESHOLD - 1 }, () => withPrice(5_000_000)),
+        previous: { lastReportedMinPrice: 5_000_000, lastReportedAvailableCount: AVAILABILITY_THRESHOLD },
+      });
+
+      it("a count-only change alerts when not suppressed", () => {
+        expect(isChangeAlert(countCrossing, { suppressAvailabilityAlert: false })).toBe(true);
+      });
+
+      it("a count-only change is muted when suppressed", () => {
+        expect(isChangeAlert(countCrossing, { suppressAvailabilityAlert: true })).toBe(false);
+      });
+
+      it("a price change still alerts even when suppressed", () => {
+        const priceChange = evaluate({
+          placements: [withPrice(2_000_000)],
+          previous: { lastReportedMinPrice: 3_000_000, lastReportedAvailableCount: 1 },
+        });
+        expect(isChangeAlert(priceChange, { suppressAvailabilityAlert: true })).toBe(true);
+      });
+
+      it("recovery still alerts even when suppressed and nothing else changed", () => {
+        const noChange = evaluate({
+          placements: [withPrice(3_000_000)],
+          previous: { lastReportedMinPrice: 3_000_000, lastReportedAvailableCount: 1 },
+        });
+        expect(isChangeAlert(noChange, { justRecovered: true, suppressAvailabilityAlert: true })).toBe(true);
+      });
+    });
+
+    describe("buildReport", () => {
+      const object = { name: "Test Object" };
+
+      it("hides the count-crossing 🔥 marker when suppressed, but keeps the count itself", () => {
+        const evaluated = evaluate({
+          placements: Array.from({ length: AVAILABILITY_THRESHOLD - 1 }, () => withPrice(5_000_000)),
+          previous: { lastReportedMinPrice: 5_000_000, lastReportedAvailableCount: AVAILABILITY_THRESHOLD },
+        });
+
+        const shown = buildReport([{ object, evaluated, changed: true }]);
+        const hidden = buildReport([{ object, evaluated, changed: true }], { suppressAvailabilityAlert: true });
+
+        expect(shown).toContain("Наличие ниже порога");
+        expect(hidden).not.toContain("Наличие ниже порога");
+        expect(hidden).not.toContain("🔥");
+        expect(hidden).toContain("В продаже");
+      });
+
+      it("still shows the price-crossing 🔥 marker even when availability alerts are suppressed", () => {
+        const evaluated = evaluate({
+          placements: [withPrice(2_000_000)],
+          previous: { lastReportedMinPrice: 3_000_000, lastReportedAvailableCount: 1 },
+        });
+
+        const report = buildReport([{ object, evaluated, changed: true }], { suppressAvailabilityAlert: true });
+        expect(report).toContain("🔥");
+        expect(report).toContain("Цена достигла порога");
+      });
     });
   });
 });

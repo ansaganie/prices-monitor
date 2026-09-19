@@ -1,9 +1,11 @@
-// Main entrypoint: fetch → evaluate → diff against committed state → notify on
-// new triggers only → write state back. The workflow commits data/state.json
-// afterwards, which is the whole persistence layer.
+// Main entrypoint: fetch → evaluate → diff against previous state → notify on
+// new triggers only → write state back. State lives in a GitHub Release body
+// (see docs/adr/0001-release-body-for-state-persistence.md) rather than a
+// committed file — that release is the whole persistence layer.
 
 import { AVAILABILITY_THRESHOLD, OBJECTS, PRICE_FLOOR } from "../config/objects.js";
 import { fetchAllPlacements } from "./bi-api.js";
+import { readReleaseState, writeReleaseState } from "./release-state.js";
 import {
   getAstanaTime,
   isRunForced,
@@ -13,12 +15,12 @@ import {
 } from "./schedule.js";
 import { escapeHtml, sendMessage } from "./telegram.js";
 
-const STATE_PATH = Bun.fileURLToPath(new URL("../data/state.json", import.meta.url));
 const STATE_VERSION = 1;
 
-/** Bump the keep-alive timestamp this often. Scheduled workflows are disabled
- *  after 60 days of repo inactivity, and state only commits when it changes —
- *  so a quiet stretch would otherwise switch the monitor off silently. */
+/** Bump the keep-alive timestamp this often. Historically guarded against
+ *  GitHub's 60-day scheduled-workflow inactivity disable; kept as-is per
+ *  docs/adr/0001-release-body-for-state-persistence.md (storage changed,
+ *  behaviour didn't). */
 const KEEPALIVE_DAYS = 14;
 
 /** Cap how many units one alert lists before collapsing the rest into a count. */
@@ -110,21 +112,23 @@ export function buildReport(objectResults) {
 
 export const buildDigest = buildReport;
 
+const emptyState = () => ({ version: STATE_VERSION, keepAliveAt: null, lastRunAt: null, objects: {} });
+
+/**
+ * @returns {Promise<{ releaseId: number | null, state: object }>} `releaseId`
+ * is null on a genuine first run (no release yet) — `saveState` then creates it.
+ */
 async function loadState() {
-  try {
-    const state = await Bun.file(STATE_PATH).json();
-    return {
-      version: STATE_VERSION,
-      keepAliveAt: null,
-      lastRunAt: null,
-      ...state,
-      objects: state.objects ?? {},
-    };
-  } catch {
-    // Missing or unreadable state = first run. Empty defaults make every
-    // currently-qualifying unit a "new" trigger, which is the intended behaviour.
-    return { version: STATE_VERSION, keepAliveAt: null, lastRunAt: null, objects: {} };
+  const found = await readReleaseState();
+  if (!found) {
+    // No release yet = first run. Empty defaults make every currently-qualifying
+    // unit a "new" trigger, which is the intended behaviour.
+    return { releaseId: null, state: emptyState() };
   }
+  return {
+    releaseId: found.releaseId,
+    state: { ...emptyState(), ...found.state, objects: found.state.objects ?? {} },
+  };
 }
 
 /** Minutes since the previous run, or null if there's no previous run to compare
@@ -223,7 +227,7 @@ async function main() {
     return;
   }
 
-  const state = await loadState();
+  const { releaseId, state } = await loadState();
   const gapMinutes = minutesSinceLastRun(state);
   const nextObjects = { ...state.objects };
   // Collected for the scan report — one entry per object.
@@ -277,10 +281,10 @@ async function main() {
     console.log("No new alert triggers in this scan");
   }
 
-  await saveState({ ...state, objects: nextObjects, lastRunAt: new Date().toISOString() });
+  await saveState({ ...state, objects: nextObjects, lastRunAt: new Date().toISOString() }, releaseId);
 }
 
-async function saveState(state) {
+async function saveState(state, releaseId) {
   const previousKeepAlive = state.keepAliveAt ? Date.parse(state.keepAliveAt) : NaN;
   const staleKeepAlive =
     Number.isNaN(previousKeepAlive) || Date.now() - previousKeepAlive > KEEPALIVE_DAYS * 86_400_000;
@@ -291,7 +295,7 @@ async function saveState(state) {
     lastRunAt: state.lastRunAt,
     objects: state.objects,
   };
-  await Bun.write(STATE_PATH, `${JSON.stringify(next, null, 2)}\n`);
+  await writeReleaseState(next, releaseId);
 }
 
 // Guarded so the pure helpers above (priceOf, isAvailable) can be imported and

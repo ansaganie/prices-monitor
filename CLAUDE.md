@@ -18,19 +18,20 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 - Run tests: `bun test`
 - No build step, no linter configured yet — this is a single-script Bun project with built-in test runner.
 - No npm/npx in this devcontainer (Bun-only image) — use `bunx` in place of `npx` for anything that needs it (e.g. the Perplexity MCP server config).
-- Local runs need `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the environment (or a `.env` Bun loads automatically).
+- Local runs need `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the environment (or a `.env` Bun loads automatically). Persisting state locally also needs `GITHUB_TOKEN` (a PAT with `repo` scope) and `GITHUB_REPOSITORY` (`owner/repo`) — see `.env.example`.
 
 ## Architecture
 
-**State persistence across ephemeral runners**: GitHub Actions runners don't persist state between runs, so "did this change since last time" is tracked by committing `data/state.json` back to the repo after each run (only when it actually changed). There is no external DB — this is the entire persistence layer.
+**State persistence across ephemeral runners**: GitHub Actions runners don't persist state between runs, so "did this change since last time" is tracked via the body of a dedicated GitHub Release (tagged `monitor-state`), read/written through the GitHub REST API using the workflow's own `GITHUB_TOKEN` (see `src/release-state.js` and `docs/adr/0001-release-body-for-state-persistence.md`). There is no external DB — this is the entire persistence layer. State used to be committed as `data/state.json` instead; that approach was dropped for the 25+ recurring "chore: update monitor state" commits it produced.
 
-**Planned file layout** (see the spec doc for full detail):
+**File layout**:
 - `config/objects.js` — extendable array of monitored real-estate objects (`PRICE_FLOOR`, `AVAILABILITY_THRESHOLD`, `OBJECTS`).
 - `src/bi-api.js` — `fetchAllPlacements()`: paginates the BI Group API (`pageNo` starts at **1**, not 0) and validates every returned placement actually belongs to a requested `realEstateUUIDs` entry (guards against the API silently returning the wrong inventory on a bad request key).
 - `src/schedule.js` — Astana timezone (UTC+05:00) helpers and working hours evaluation (06:00–20:00).
 - `src/telegram.js` — `sendMessage(text)` via the Telegram Bot API; throws on non-OK so misconfigured secrets fail loudly.
-- `src/check.js` — main entrypoint: working hours check → fetch → evaluate → diff against previous `data/state.json` → send scan report to Telegram with any edge-triggered alerts (including a run-gap watchdog, see below) → write updated state.
-- `.github/workflows/monitor.yml` — `workflow_dispatch` (manual) + `repository_dispatch` (`external-cron`), needs `permissions: contents: write` to commit state back.
+- `src/release-state.js` — `readReleaseState()` / `writeReleaseState()`: get/patch the `monitor-state` release body via the GitHub REST API; `readReleaseState()` returns `null` (not a throw) when the release doesn't exist yet, which `check.js` treats as first run.
+- `src/check.js` — main entrypoint: working hours check → fetch → evaluate → diff against previous state → send scan report to Telegram with any edge-triggered alerts (including a run-gap watchdog, see below) → write updated state.
+- `.github/workflows/monitor.yml` — `workflow_dispatch` (manual) + `repository_dispatch` (`external-cron`), needs `permissions: contents: write` to read/write the state release (the same permission already used for releases, no new secret).
 
 **cron-job.org's `external-cron` dispatch is the sole automated trigger — do not re-diagnose this from scratch.** GitHub's native `schedule:` cron was removed: verified via the GitHub API that only ~3-9 of the ~24-28 daily runs the old cron expression implied actually fired, consistent with GitHub throttling `schedule:` events for new/low-trust accounts (anti-abuse measure). Running it alongside cron-job.org was redundant and made cadence unpredictable, so it's gone — the guarantee of ≥1 run/working-hour is now entirely the external cron-job.org job dispatching a `repository_dispatch` `external-cron` event every 30 minutes (`repository_dispatch` is an explicit API call, not a passive `schedule:` sweep, so it isn't subject to the same throttling). See README's "Guaranteeing ≥1 run per working-hour" section for the exact request shape and required PAT scope. `src/check.js` also tracks `lastRunAt` in state and warns in the report if a run gap exceeds 90 minutes, so a broken external trigger (e.g. expired PAT) doesn't fail silently — this is now the only signal that the monitor has stopped running.
 
@@ -43,7 +44,7 @@ A zero-server parking-listing monitor for two BI Group residential complexes (Je
 - **Request body**: the API key is `realEstateUUIDs` (array, plural) — sending `realEstateUUID` returns HTTP 200 with the wrong company-wide data instead of erroring, so always validate the response's real-estate UUIDs against the request. `companyIds` is not required and should be omitted. `pageNo` is 1-based; `pageNo: 0` returns HTTP 400.
 - **An empty placement list is a failure, not an empty object.** A retired or mistyped-but-well-formed `realEstateUUID` returns HTTP 200 with `placements: []` (verified live) — which would flow into `availableCount = 0` and fire a false low-stock alert. `fetchAllPlacements` throws on zero placements so it takes the fetch-failure path instead.
 - **Fetch failures must never be treated as zero placements/zero availability** — that would fire a false low-stock alert on a network hiccup. Skip evaluation for that object on failure instead.
-- **First run** alerts on anything already qualifying (empty previous state = everything is "new"), not just future crossings — no special-casing needed as long as missing `data/state.json` defaults to empty sets.
+- **First run** alerts on anything already qualifying (empty previous state = everything is "new"), not just future crossings — no special-casing needed as long as a missing `monitor-state` release defaults to empty sets.
 
 ## Agent skills
 

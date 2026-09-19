@@ -19,7 +19,7 @@ _Avoid_: sending unconditionally every run (the old behavior this concept replac
 The Send Trigger that fires once per Astana calendar day, on the first run where local time is ≥13:00 — a full status report of every Monitored Object regardless of whether anything changed. See [[0002-baseline-diff-notification-triggers]].
 
 **Change Alert**:
-The Send Trigger that fires when a Monitored Object's current min available price or available-unit count differs, in either direction, from its Reported Baseline. See [[0002-baseline-diff-notification-triggers]].
+The Send Trigger that fires when a Monitored Object's current min available price or available-unit count differs, in either direction, from its Reported Baseline. See [[0002-baseline-diff-notification-triggers]]. The available-count half can be muted at runtime via `SKIP_AVAILABILITY_ALERT` (set from the external-cron `client_payload.skipAvailabilityAlert`, no redeploy needed) — a suppressed count change still updates the Reported Baseline, it just doesn't force a send or show the 🔥 marker. The price half is never affected by this toggle.
 
 **Reported Baseline**:
 The min-price/available-count values from the last message actually sent for a Monitored Object (Daily Digest or Change Alert) — not the values from the most recent fetch. A run that observes a change but doesn't yet send anything (impossible today, since any observed change is itself send-worthy, but relevant for reasoning about the diff) would not move the baseline.

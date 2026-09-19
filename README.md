@@ -29,6 +29,10 @@ A run sends a Telegram message only when one of three independent triggers fires
 Polling itself still happens every ~30 minutes regardless of these triggers — they only
 control when a Telegram message actually goes out.
 
+The availability-count half of the Change Alert (and its 🔥 marker) can be muted
+without a redeploy — see "Guaranteeing ≥1 run per working-hour" below. Price Change
+Alerts, the Daily Digest, and the Run-Gap Watchdog are unaffected.
+
 ## Setup
 
 ### 1. Create a Telegram bot
@@ -174,6 +178,17 @@ The PAT needs only the **Contents: Read & Write** repository permission (Metadat
 Read is auto-included), scoped to this one repo — that's what the dispatches endpoint
 requires. Enable cron-job.org's "notify on failure" email so an expired token or a
 renamed repo surfaces immediately instead of silently.
+
+To mute the availability-count Change Alert (see "Notifications" above), edit the
+job's body in cron-job.org's dashboard to add a `client_payload`:
+```json
+{"event_type": "external-cron", "client_payload": {"skipAvailabilityAlert": true}}
+```
+Remove the field (or set it to `false`) to unmute. This doesn't touch the Reported
+Baseline — it only withholds the count from acting as a Change Alert trigger — so
+unmuting later doesn't dump a backlog of every change that happened while it was off,
+only a genuinely new change alerts again. This is a cron-job.org-side config edit —
+no PR or redeploy needed.
 
 As a second line of defense, `src/check.js` tracks `lastRunAt` in the persisted state
 and treats a gap of more than 90 minutes since the previous run as its own send

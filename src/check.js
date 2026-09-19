@@ -34,6 +34,17 @@ const RUN_GAP_WARNING_MINUTES = 90;
 const formatPrice = (value) => new Intl.NumberFormat("ru-RU").format(value);
 
 /**
+ * Mutes the availability-count's role as a Change Alert trigger (and its 🔥
+ * Crossing Event marker), without touching the Reported Baseline — set via the
+ * external-cron repository_dispatch's client_payload.skipAvailabilityAlert,
+ * wired through to SKIP_AVAILABILITY_ALERT in monitor.yml. Price-based Change
+ * Alerts, the Daily Digest, and the Run-Gap Watchdog are unaffected.
+ */
+export function isAvailabilityAlertSuppressed(env = process.env) {
+  return env.SKIP_AVAILABILITY_ALERT === "1" || env.SKIP_AVAILABILITY_ALERT === "true";
+}
+
+/**
  * A placement's real price. `discount.stock.data[].priceWithDiscount` is what
  * the site renders; the top-level `totalPriceWithDiscount` goes stale.
  * The `discounts.length` check is deliberate — `Math.min(...[])` is `Infinity`,
@@ -104,7 +115,17 @@ export function evaluate({ placements, previous }) {
   };
 }
 
-function buildObjectBlock({ object, evaluated, justRecovered }) {
+/**
+ * Whether this run's evaluation warrants a Change Alert send. Split out from
+ * `evaluate()` (which stays agnostic of the suppression toggle) so it's
+ * unit-testable on its own: with `suppressAvailabilityAlert`, a count-only
+ * change no longer forces a send — only a price change or recovery does.
+ */
+export function isChangeAlert(evaluated, { justRecovered = false, suppressAvailabilityAlert = false } = {}) {
+  return evaluated.priceChanged || (evaluated.countChanged && !suppressAvailabilityAlert) || justRecovered;
+}
+
+function buildObjectBlock({ object, evaluated, justRecovered, suppressAvailabilityAlert = false }) {
   const header = `<b>${escapeHtml(object.name)}</b>`;
   const lines = [header];
   if (justRecovered) lines.push("✅ Данные снова доступны");
@@ -138,7 +159,9 @@ function buildObjectBlock({ object, evaluated, justRecovered }) {
   }
 
   if (priceCrossedFloor) lines.push(`🔥 Цена достигла порога ≤ ${formatPrice(PRICE_FLOOR)} ₸`);
-  if (countCrossedThreshold) lines.push(`🔥 Наличие ниже порога ${AVAILABILITY_THRESHOLD}`);
+  if (countCrossedThreshold && !suppressAvailabilityAlert) {
+    lines.push(`🔥 Наличие ниже порога ${AVAILABILITY_THRESHOLD}`);
+  }
 
   if (object.url) lines.push(`🔗 ${object.url}`);
   return lines.join("\n");
@@ -150,7 +173,7 @@ function buildObjectBlock({ object, evaluated, justRecovered }) {
  * triggered the send) — cheap context, and it's the same shape whether the
  * send is a Daily Digest, a Change Alert, or both merged together.
  */
-export function buildReport(objectResults) {
+export function buildReport(objectResults, { suppressAvailabilityAlert = false } = {}) {
   const hasChanges = objectResults.some((r) => r.changed);
   const title = hasChanges
     ? "🅿️ <b>BI Group — паркинг · Отчет о сканировании 🔔</b>"
@@ -161,7 +184,7 @@ export function buildReport(objectResults) {
       const header = `<b>${escapeHtml(object.name)}</b>`;
       return `${header}\n⚠️ Данные недоступны: <i>${escapeHtml(error.message)}</i>`;
     }
-    return buildObjectBlock({ object, evaluated, justRecovered });
+    return buildObjectBlock({ object, evaluated, justRecovered, suppressAvailabilityAlert });
   });
 
   return `${title}\n\n${blocks.join("\n\n")}`;
@@ -231,6 +254,11 @@ async function main() {
   // Telegram message when something ends up warranting a send this run.
   const objectResults = [];
 
+  const suppressAvailabilityAlert = isAvailabilityAlertSuppressed();
+  if (suppressAvailabilityAlert) {
+    console.log("Availability Change Alert suppressed this run (SKIP_AVAILABILITY_ALERT)");
+  }
+
   for (const object of OBJECTS) {
     const previous = { ...emptyObjectState(object.name), ...(state.objects[object.id] ?? {}) };
 
@@ -251,7 +279,7 @@ async function main() {
 
     const evaluated = evaluate({ placements, previous });
     const justRecovered = previous.failing;
-    const changed = evaluated.priceChanged || evaluated.countChanged || justRecovered;
+    const changed = isChangeAlert(evaluated, { justRecovered, suppressAvailabilityAlert });
     nextObjects[object.id] = { name: object.name, ...evaluated.next, failing: false };
 
     console.log(
@@ -266,7 +294,7 @@ async function main() {
   const shouldSend = digestDue || gapWarningActive || anyObjectChanged;
 
   if (shouldSend) {
-    const report = buildReport(objectResults);
+    const report = buildReport(objectResults, { suppressAvailabilityAlert });
     // The external-cron trigger is what guarantees a run every working hour (native
     // GitHub `schedule:` is unreliable for this account — see monitor.yml). A large
     // gap since the last run means that guarantee has silently broken.

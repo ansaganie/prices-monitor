@@ -1,16 +1,33 @@
-# BI Parking Price Monitor
+# Price Monitor
 
-Watches parking listings at two BI Group complexes in Astana — **Jetisu Satti** and
-**Jetisu Kerbez Comfort** — sends a status report to Telegram after each scan, and highlights alerts when either:
-
-- an **available** unit's price drops to **≤ 2 200 000 ₸**, or
-- the number of **available** units for an object falls **below 20**.
+Polls a source API on a schedule and pings Telegram when a tracked listing's price or
+available-unit count changes, or crosses a configured floor/threshold. Currently
+configured to watch parking availability at two BI Group residential complexes in
+Astana — **Jetisu Satti** and **Jetisu Kerbez Comfort** — via BI Group's public
+sales-picker API; see "Adding another object" below for what tracking a different
+source would take.
 
 No server, no database, no npm dependencies. It's a single Bun script run by GitHub
-Actions every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00), using BI Group's own public JSON API.
+Actions every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00).
 
-Alert details within the report are **edge-triggered**: you're alerted when a condition newly becomes true, or
-when it gets worse (a new unit crosses the floor, the count drops further).
+### Notifications
+
+A run sends a Telegram message only when one of three independent triggers fires
+(merged into a single message when more than one fires on the same run — see
+[`docs/adr/0002-baseline-diff-notification-triggers.md`](docs/adr/0002-baseline-diff-notification-triggers.md)):
+
+- **Daily digest** — once a day, on the first run at/after **13:00 Astana time**: full
+  current status of every monitored object, whether or not anything changed.
+- **Change alert** — whenever an object's minimum available price or available-unit
+  count differs, in either direction, from the value in the last message actually sent
+  for it. A change that crosses the configured floor (**≤ 2 200 000 ₸**) or availability
+  threshold (**< 20**) is additionally highlighted with 🔥.
+- **Run-gap watchdog** — if more than 90 minutes have passed since the previous run,
+  warning that the external-cron trigger (see "Guaranteeing ≥1 run per working-hour"
+  below) may have broken.
+
+Polling itself still happens every ~30 minutes regardless of these triggers — they only
+control when a Telegram message actually goes out.
 
 ## Setup
 
@@ -76,6 +93,10 @@ for why.
 
 ## Adding another object
 
+This adds another BI Group object using the existing fetch adapter
+(`src/bi-api.js`) — tracking a listing from a different source isn't supported yet,
+see [`docs/adr/0003-scope-bi-group-rebrand-to-docs.md`](docs/adr/0003-scope-bi-group-rebrand-to-docs.md).
+
 Append an entry to `OBJECTS` in [`config/objects.js`](config/objects.js):
 
 ```js
@@ -108,14 +129,14 @@ These were each verified against live API data, and some are counter-intuitive.
   availability: Kerbez has **zero** units marked `Свободно` despite 74 being on sale,
   so a status-based rule would fire a permanent, wrong low-stock alert there.
 - **Fetch failures are never counted as zero, and never fail the Actions run.** If an
-  object can't be fetched, it's skipped for that run and its previous numbers are kept,
-  so a network hiccup can't masquerade as "everything sold out". The failure is
-  reported inline in the Telegram scan report (`⚠️ Данные недоступны: ...`) — the
-  script absorbs it rather than exiting non-zero, so the Actions run still shows green.
-  You get one alert when an object starts failing and one when it recovers — not one
-  per run.
-- **The first run alerts on whatever already qualifies**, not only on future changes,
-  since no `monitor-state` release yet means "nothing seen yet".
+  object can't be fetched, it's skipped for that run and its previous baseline is kept,
+  so a network hiccup can't masquerade as "everything sold out". The script absorbs the
+  error rather than exiting non-zero, so the Actions run still shows green. Starting to
+  fail and recovering are each their own trigger for a send (`⚠️ Данные недоступны: ...`
+  / `✅ Данные снова доступны`) — not a message every run a fetch happens to still be down.
+- **The first report for an object alerts on whatever already qualifies**, not only on
+  future changes, since no prior "last reported" baseline means every current value
+  counts as new information.
 - **Schedule is every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00 / 01:00 to 15:00 UTC)**.
   cron-job.org is the *only* automated trigger — see "Keeping the workflow alive" below.
   GitHub's native `schedule:` cron was tried and removed: it was unreliable for this
@@ -155,9 +176,11 @@ requires. Enable cron-job.org's "notify on failure" email so an expired token or
 renamed repo surfaces immediately instead of silently.
 
 As a second line of defense, `src/check.js` tracks `lastRunAt` in the persisted state
-and prepends a `⚠️ Предыдущий запуск был давно` warning to the next report if more
-than 90 minutes passed since the previous run — catching the case where a trigger
-fires late rather than not at all.
+and treats a gap of more than 90 minutes since the previous run as its own send
+trigger — the Run-Gap Watchdog (see "Notifications" above) — prepending
+`⚠️ Предыдущий запуск был N мин назад — проверьте внешний cron.` to whatever else is
+being sent, or sending that warning on its own if nothing else triggered a message.
+This catches the case where a trigger fires late rather than not at all.
 
 ## Unit deep links
 

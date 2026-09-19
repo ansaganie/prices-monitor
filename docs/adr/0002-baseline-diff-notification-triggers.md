@@ -1,0 +1,15 @@
+# Notify on three independent triggers, not every run
+
+Status: accepted
+
+Every successful run used to send a Telegram message unconditionally (a "scan report"), with only the floor/threshold sections inside it edge-triggered. That's noisy at ~2 runs/hour across working hours. We now send only on three independent Send Triggers — Daily Digest (first run ≥13:00 Astana each day), Change Alert (an Object's min price or available count differs from its Reported Baseline), and Run-Gap Watchdog (>90min since the last run) — merged into one message when more than one fires on the same run. See [[../../CONTEXT.md]] for the vocabulary.
+
+## Considered Options
+
+- **Baseline for "changed": previous run's value vs. Reported Baseline (last value actually sent).** Diffing against the previous run would fire a separate alert for every ~30min step of a gradual price drift. Diffing against the last *reported* value collapses silent moves between sends into one alert and never re-alerts on a value the user already saw. Chose Reported Baseline — it directly encodes "tell me when something's changed from what I last saw," not "tell me every time the number moves."
+- **Floor/threshold crossing: separate alert path vs. folded into Change Alert.** The old design had `belowFloorUUIDs`/`lastNotifiedAvailableCount` driving their own edge-triggered sections inside the always-sent report. Keeping that as a second alert path alongside the new generic Change Alert would mean two overlapping notions of "this is worth telling someone about." Folded it in instead: a Crossing Event is just a Change Alert where the Reported Baseline was on the other side of `PRICE_FLOOR`/`AVAILABILITY_THRESHOLD` from the new value, shown as a 🔥 highlight on that one message rather than a persistent status repeated on every later send.
+- **Run-Gap Watchdog: piggyback on other triggers vs. independent trigger.** Rejected piggybacking — its entire purpose is catching a silently broken external-cron trigger promptly; gating it behind "only if a digest or change alert also fired" would mean a dead cron could go undetected for most of a day.
+
+## Consequences
+
+State schema changes (per Monitored Object unless noted): added `lastDigestDate` (top-level, Astana calendar date string), `lastReportedMinPrice`, `lastReportedAvailableCount`; removed `belowFloorUUIDs`, `lastNotifiedAvailableCount` (superseded by the Reported Baseline diff). On first deploy, the new baseline fields are seeded from the values already present in the outgoing state (not left empty), so ship day doesn't read as "everything just changed" and burst-notify both Objects. A Monitored Object with a genuinely absent baseline (e.g. a new one added later) keeps the existing first-run philosophy: no baseline is treated as changed, and fires an initial Change Alert — no special-casing needed. `src/schedule.js` gains a "first run today ≥13:00 Astana" check to drive the Daily Digest; it did not previously have any concept of a specific time of day, only the working-hours boolean range.

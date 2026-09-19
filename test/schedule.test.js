@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   getAstanaTime,
+  isDigestDue,
   isRunForced,
   isWithinWorkingHours,
   WORKING_HOURS_END,
@@ -26,6 +27,34 @@ describe("schedule", () => {
       const midnightAstana = getAstanaTime(midnightRolloverUtc);
       expect(midnightAstana.hours).toBe(1);
       expect(midnightAstana.timeString).toBe("01:00");
+    });
+
+    it("rolls the Astana calendar date over at 19:00 UTC (00:00 Astana)", () => {
+      expect(getAstanaTime(new Date("2026-09-14T18:59:00Z")).dateString).toBe("2026-09-14");
+      expect(getAstanaTime(new Date("2026-09-14T19:00:00Z")).dateString).toBe("2026-09-15");
+    });
+  });
+
+  describe("isDigestDue", () => {
+    it("is false before 13:00 Astana", () => {
+      const astana = getAstanaTime(new Date("2026-09-14T07:59:00Z")); // 12:59 Astana
+      expect(isDigestDue(astana, null)).toBe(false);
+    });
+
+    it("is true at/after 13:00 Astana when no digest has been sent today", () => {
+      const astana = getAstanaTime(new Date("2026-09-14T08:00:00Z")); // 13:00 Astana
+      expect(isDigestDue(astana, null)).toBe(true);
+      expect(isDigestDue(astana, "2026-09-13")).toBe(true);
+    });
+
+    it("is false on later runs the same Astana day once already sent", () => {
+      const astana = getAstanaTime(new Date("2026-09-14T10:00:00Z")); // 15:00 Astana
+      expect(isDigestDue(astana, "2026-09-14")).toBe(false);
+    });
+
+    it("is true again the next Astana day", () => {
+      const astana = getAstanaTime(new Date("2026-09-15T08:30:00Z")); // 13:30 Astana
+      expect(isDigestDue(astana, "2026-09-14")).toBe(true);
     });
   });
 

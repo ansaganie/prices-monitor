@@ -5,7 +5,3 @@ node_modules/
 
 # Planning / scratch docs — not for public history
 i-need-a-price-sequential-snowglobe.md
-
-# Runtime-generated state (committed explicitly by the workflow, not by accident)
-# Uncomment the line below only if you want to stop tracking state entirely.
-# data/state.json

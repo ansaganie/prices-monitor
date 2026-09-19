@@ -28,16 +28,21 @@ when it gets worse (a new unit crosses the floor, the count drops further).
 2. **Settings → Secrets and variables → Actions → New repository secret**, add both
    `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 3. **Settings → Actions → General → Workflow permissions** → select
-   **Read and write permissions**. Without this the workflow can't commit state back
-   and every run re-alerts.
+   **Read and write permissions**. Without this the workflow can't read/write the
+   `monitor-state` release and every run re-alerts.
 4. **Actions** tab → *Monitor parking listings* → **Run workflow** to test it.
 
 ### 3. Run it locally (optional)
 
 ```sh
-cp .env.example .env      # fill in your token and chat id — Bun loads .env automatically
+cp .env.example .env      # fill in Telegram + GitHub values — Bun loads .env automatically
 bun run src/check.js
 ```
+
+Run state lives in a GitHub Release body (see "How it works" below), so local
+runs need `GITHUB_TOKEN` (a PAT with `repo` scope, or fine-grained
+Contents: Read & Write) and `GITHUB_REPOSITORY` in `.env` too — both are set
+automatically in the Actions environment.
 
 Set `DRY_RUN=1` to print the alert to stdout instead of sending it:
 
@@ -54,16 +59,20 @@ bun run src/check.js --force
 ## How it works
 
 ```
-config/objects.js   what to watch: UUIDs, price floor, availability threshold
-src/bi-api.js       paginated fetch of BI Group's placementList endpoint
-src/telegram.js     sendMessage() via the Telegram Bot API
-src/check.js        fetch → evaluate → diff vs. previous state → notify → save state
-data/state.json     committed snapshot; the entire persistence layer
+config/objects.js     what to watch: UUIDs, price floor, availability threshold
+src/bi-api.js         paginated fetch of BI Group's placementList endpoint
+src/telegram.js       sendMessage() via the Telegram Bot API
+src/release-state.js  read/write run state via the GitHub Releases API
+src/check.js          fetch → evaluate → diff vs. previous state → notify → save state
 ```
 
 GitHub Actions runners are ephemeral, so "has this changed since last time?" is
-answered by committing `data/state.json` back to the repo after each run — and only
-when it actually changed, so the history stays readable.
+answered by persisting state in the body of a dedicated GitHub Release
+(tagged `monitor-state`), updated via `PATCH /repos/{owner}/{repo}/releases/{id}`
+using the workflow's own `GITHUB_TOKEN` — no committed file, no git-history
+pollution, no new secret. See
+[`docs/adr/0001-release-body-for-state-persistence.md`](docs/adr/0001-release-body-for-state-persistence.md)
+for why.
 
 ## Adding another object
 
@@ -106,7 +115,7 @@ These were each verified against live API data, and some are counter-intuitive.
   You get one alert when an object starts failing and one when it recovers — not one
   per run.
 - **The first run alerts on whatever already qualifies**, not only on future changes,
-  since an absent `data/state.json` means "nothing seen yet".
+  since no `monitor-state` release yet means "nothing seen yet".
 - **Schedule is every 30 minutes during Astana working hours (06:00 to 20:00 UTC+05:00 / 01:00 to 15:00 UTC)**.
   cron-job.org is the *only* automated trigger — see "Keeping the workflow alive" below.
   GitHub's native `schedule:` cron was tried and removed: it was unreliable for this
@@ -118,11 +127,11 @@ These were each verified against live API data, and some are counter-intuitive.
 
 ## Keeping the workflow alive
 
-GitHub **disables scheduled workflows after 60 days of repository inactivity**. Because
-state is only committed when it changes, a long quiet stretch could otherwise switch
-the monitor off with no warning. To prevent that, `data/state.json` carries a
-`keepAliveAt` timestamp that's refreshed every 14 days, forcing a commit and resetting
-the inactivity clock.
+GitHub **disables scheduled workflows after 60 days of repository inactivity**. To
+guard against a long quiet stretch switching the monitor off with no warning, the
+persisted state carries a `keepAliveAt` timestamp that's refreshed every 14 days
+(see [`docs/adr/0001-release-body-for-state-persistence.md`](docs/adr/0001-release-body-for-state-persistence.md)
+for where state now lives).
 
 If the monitor ever does go quiet for months, check the **Actions** tab for a
 "this workflow was disabled" banner and re-enable it there.
@@ -145,7 +154,7 @@ Read is auto-included), scoped to this one repo — that's what the dispatches e
 requires. Enable cron-job.org's "notify on failure" email so an expired token or a
 renamed repo surfaces immediately instead of silently.
 
-As a second line of defense, `src/check.js` tracks `lastRunAt` in `data/state.json`
+As a second line of defense, `src/check.js` tracks `lastRunAt` in the persisted state
 and prepends a `⚠️ Предыдущий запуск был давно` warning to the next report if more
 than 90 minutes passed since the previous run — catching the case where a trigger
 fires late rather than not at all.

@@ -19,11 +19,13 @@ on:
     paths:
       - ".github/workflows/monitor.yml"
 
-# Needed to commit data/state.json back — that file is the entire persistence layer.
+# Needed to read/write the "monitor-state" release that holds run state — see
+# docs/adr/0001-release-body-for-state-persistence.md. Releases are covered by
+# the same contents:write permission as commits, so no new secret is needed.
 permissions:
   contents: write
 
-# Never let two runs race on the same state commit.
+# Never let two runs race on the same state release.
 concurrency:
   group: monitor
   cancel-in-progress: false
@@ -43,21 +45,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force || github.event_name == 'repository_dispatch' && '1' || '' }}
         run: bun run src/check.js
-
-      - name: Commit state
-        # Runs even when the check step failed, so a partial run still records
-        # what it learned (e.g. an object marked failing, to avoid re-alerting).
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/
-          if git diff --cached --quiet; then
-            echo "State unchanged — nothing to commit."
-          else
-            git commit -m "chore: update monitor state [skip ci]"
-            git pull --rebase origin main || true
-            git push
-          fi

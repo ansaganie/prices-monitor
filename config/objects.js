@@ -1,9 +1,9 @@
 // Monitored BI Group real-estate objects.
 //
 // To add another object: append an entry below. `id` is the stable key used in
-// data/state.json — never change it for an existing object, or its alert history
-// resets and you get a duplicate first-run notification. `name` is display-only
-// and safe to edit.
+// the persisted run state (see src/release-state.js) — never change it for an
+// existing object, or its alert history resets and you get a duplicate
+// first-run notification. `name` is display-only and safe to edit.
 //
 // Finding the UUIDs: open the complex's parking picker in a browser, watch the
 // POST to apigw.bi.group/sales-picker/microfe-v3/placementList in devtools, and

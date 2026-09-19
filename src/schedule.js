@@ -8,8 +8,13 @@ export const ASTANA_OFFSET_HOURS = 5;
 export const WORKING_HOURS_START = 6; // 06:00
 export const WORKING_HOURS_END = 20; // 20:00
 
+/** Astana hour at/after which the once-daily Daily Digest becomes due. */
+export const DIGEST_HOUR = 13; // 13:00
+
 /**
- * Returns the time components in the Astana timezone (UTC+05:00).
+ * Returns the time components in the Astana timezone (UTC+05:00), including a
+ * `dateString` (YYYY-MM-DD, Astana calendar date) used to track whether today's
+ * Daily Digest has already been sent.
  */
 export function getAstanaTime(date = new Date()) {
   const utcMs = date.getTime();
@@ -21,14 +26,24 @@ export function getAstanaTime(date = new Date()) {
 
   const pad = (n) => String(n).padStart(2, "0");
   const timeString = `${pad(hours)}:${pad(minutes)}`;
+  const dateString = `${astanaDate.getUTCFullYear()}-${pad(astanaDate.getUTCMonth() + 1)}-${pad(astanaDate.getUTCDate())}`;
 
   return {
     hours,
     minutes,
     seconds,
     timeString,
+    dateString,
     date: astanaDate,
   };
+}
+
+/**
+ * Is today's Daily Digest due? True on the first check of the Astana calendar
+ * day at/after `DIGEST_HOUR`, false on every later run that same day.
+ */
+export function isDigestDue(astanaTime, lastDigestDate) {
+  return astanaTime.hours >= DIGEST_HOUR && astanaTime.dateString !== lastDigestDate;
 }
 
 /**

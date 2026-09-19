@@ -1,13 +1,17 @@
 // Main entrypoint: fetch → evaluate → diff against previous state → notify on
-// new triggers only → write state back. State lives in a GitHub Release body
-// (see docs/adr/0001-release-body-for-state-persistence.md) rather than a
+// active Send Triggers only → write state back. State lives in a GitHub Release
+// body (see docs/adr/0001-release-body-for-state-persistence.md) rather than a
 // committed file — that release is the whole persistence layer.
+//
+// See CONTEXT.md and docs/adr/0002-baseline-diff-notification-triggers.md for
+// the Send Trigger / Reported Baseline / Crossing Event vocabulary used below.
 
 import { AVAILABILITY_THRESHOLD, OBJECTS, PRICE_FLOOR } from "../config/objects.js";
 import { fetchAllPlacements } from "./bi-api.js";
 import { readReleaseState, writeReleaseState } from "./release-state.js";
 import {
   getAstanaTime,
+  isDigestDue,
   isRunForced,
   isWithinWorkingHours,
   WORKING_HOURS_END,
@@ -15,7 +19,7 @@ import {
 } from "./schedule.js";
 import { escapeHtml, sendMessage } from "./telegram.js";
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 
 /** Bump the keep-alive timestamp this often. Historically guarded against
  *  GitHub's 60-day scheduled-workflow inactivity disable; kept as-is per
@@ -23,15 +27,11 @@ const STATE_VERSION = 1;
  *  behaviour didn't). */
 const KEEPALIVE_DAYS = 14;
 
-/** Cap how many units one alert lists before collapsing the rest into a count. */
-const MAX_UNITS_LISTED = 15;
-
 /** If longer than this has passed since the last run, the external-cron guarantee
  *  has silently broken (expired PAT, cron-job.org outage, etc.) — flag it once. */
 const RUN_GAP_WARNING_MINUTES = 90;
 
 const formatPrice = (value) => new Intl.NumberFormat("ru-RU").format(value);
-
 
 /**
  * A placement's real price. `discount.stock.data[].priceWithDiscount` is what
@@ -54,37 +54,77 @@ export function priceOf(placement) {
 export const isAvailable = (placement) => placement.isSale !== false;
 
 /**
- * Build the scan report Telegram string from per-object fetch results.
- * `objectResults` is an array of `{ object, placements, sections }` or `{ object, error }`.
+ * Compare this run's observations against the Reported Baseline (the values
+ * from the last message actually sent for this object) and decide whether a
+ * Change Alert is warranted. Aggregate-only: min available price and available
+ * count, not individual placements.
  */
-export function buildReport(objectResults) {
-  const hasAlerts = objectResults.some((r) => r.sections && r.sections.length > 0);
-  const title = hasAlerts
-    ? "🅿️ <b>BI Group — паркинг · Отчет о сканировании 🔔</b>"
-    : "🅿️ <b>BI Group — паркинг · Отчет о сканировании</b>";
+export function evaluate({ placements, previous }) {
+  const available = placements.filter(isAvailable);
+  const availableCount = available.length;
+  const cheapest =
+    available.length > 0 ? available.reduce((best, p) => (priceOf(p) < priceOf(best) ? p : best)) : null;
+  const minPrice = cheapest ? priceOf(cheapest) : null;
 
-  const blocks = objectResults.map(({ object, placements, error, sections = [] }) => {
-    const header = `<b>${escapeHtml(object.name)}</b>`;
-    if (error) {
-      return `${header}\n⚠️ Данные недоступны: <i>${escapeHtml(error.message)}</i>`;
-    }
+  const priceChanged = previous.lastReportedMinPrice !== minPrice;
+  const countChanged = previous.lastReportedAvailableCount !== availableCount;
 
-    const available = placements.filter(isAvailable);
-    const availableCount = available.length;
+  // Crossing Event: the Reported Baseline was on one side of the floor/threshold
+  // and the new value is on the other. A one-time highlight, not a persistent
+  // "still low" status — so it only fires alongside the change that caused it.
+  // No baseline (previous value null, i.e. never reported) counts as "above",
+  // so a first-ever report that already qualifies is itself a crossing.
+  const wasAboveFloor = previous.lastReportedMinPrice === null || previous.lastReportedMinPrice > PRICE_FLOOR;
+  const isAtOrBelowFloor = minPrice !== null && minPrice <= PRICE_FLOOR;
+  const priceCrossedFloor = priceChanged && wasAboveFloor && isAtOrBelowFloor;
 
-    if (availableCount === 0) {
-      const lines = [`${header}\n• В продаже: <b>0</b>`];
-      if (sections.length > 0) {
-        lines.push(sections.join("\n"));
-        if (object.url) lines.push(`🔗 ${object.url}`);
-      }
-      return lines.join("\n");
-    }
+  const wasAboveThreshold =
+    previous.lastReportedAvailableCount === null || previous.lastReportedAvailableCount >= AVAILABILITY_THRESHOLD;
+  const isBelowThreshold = availableCount < AVAILABILITY_THRESHOLD;
+  const countCrossedThreshold = countChanged && wasAboveThreshold && isBelowThreshold;
 
-    const cheapest = available.reduce((best, p) =>
-      priceOf(p) < priceOf(best) ? p : best,
-    );
+  return {
+    availableCount,
+    minPrice,
+    cheapest,
+    priceChanged,
+    countChanged,
+    priceCrossedFloor,
+    countCrossedThreshold,
+    previousMinPrice: previous.lastReportedMinPrice,
+    previousAvailableCount: previous.lastReportedAvailableCount,
+    // The Reported Baseline only needs updating when it actually differs — and
+    // priceChanged/countChanged being true is exactly what forces a send this
+    // run (see main()), so setting it unconditionally here is safe: when
+    // nothing changed the value is identical to the previous baseline anyway.
+    next: {
+      lastReportedMinPrice: minPrice,
+      lastReportedAvailableCount: availableCount,
+    },
+  };
+}
 
+function buildObjectBlock({ object, evaluated, justRecovered }) {
+  const header = `<b>${escapeHtml(object.name)}</b>`;
+  const lines = [header];
+  if (justRecovered) lines.push("✅ Данные снова доступны");
+
+  const {
+    availableCount,
+    minPrice,
+    cheapest,
+    priceChanged,
+    countChanged,
+    priceCrossedFloor,
+    countCrossedThreshold,
+    previousMinPrice,
+    previousAvailableCount,
+  } = evaluated;
+
+  const countWas = countChanged && previousAvailableCount !== null ? ` (было ${previousAvailableCount})` : "";
+  lines.push(`• В продаже: <b>${availableCount}</b>${countWas}`);
+
+  if (availableCount > 0) {
     const details = [
       cheapest.floor != null ? `эт. ${cheapest.floor}` : null,
       cheapest.square != null ? `${cheapest.square} м²` : null,
@@ -92,27 +132,48 @@ export function buildReport(objectResults) {
       .filter(Boolean)
       .join(" · ");
     const detailSuffix = details ? ` · ${details}` : "";
+    const priceWas =
+      priceChanged && previousMinPrice !== null ? ` (было ${formatPrice(previousMinPrice)} ₸)` : "";
+    lines.push(`• Мин. цена: <b>${formatPrice(minPrice)} ₸</b>${detailSuffix}${priceWas}`);
+  }
 
-    const lines = [
-      header,
-      `• В продаже: <b>${availableCount}</b>`,
-      `• Мин. цена: <b>${formatPrice(priceOf(cheapest))} ₸</b>${detailSuffix}`,
-    ];
+  if (priceCrossedFloor) lines.push(`🔥 Цена достигла порога ≤ ${formatPrice(PRICE_FLOOR)} ₸`);
+  if (countCrossedThreshold) lines.push(`🔥 Наличие ниже порога ${AVAILABILITY_THRESHOLD}`);
 
-    if (sections.length > 0) {
-      lines.push(sections.join("\n"));
-      if (object.url) lines.push(`🔗 ${object.url}`);
+  if (object.url) lines.push(`🔗 ${object.url}`);
+  return lines.join("\n");
+}
+
+/**
+ * Build the Telegram message for this run's active Send Triggers. Always shows
+ * every Monitored Object's full current status (not just the one that
+ * triggered the send) — cheap context, and it's the same shape whether the
+ * send is a Daily Digest, a Change Alert, or both merged together.
+ */
+export function buildReport(objectResults) {
+  const hasChanges = objectResults.some((r) => r.changed);
+  const title = hasChanges
+    ? "🅿️ <b>BI Group — паркинг · Отчет о сканировании 🔔</b>"
+    : "🅿️ <b>BI Group — паркинг · Отчет о сканировании</b>";
+
+  const blocks = objectResults.map(({ object, error, evaluated, justRecovered }) => {
+    if (error) {
+      const header = `<b>${escapeHtml(object.name)}</b>`;
+      return `${header}\n⚠️ Данные недоступны: <i>${escapeHtml(error.message)}</i>`;
     }
-
-    return lines.join("\n");
+    return buildObjectBlock({ object, evaluated, justRecovered });
   });
 
   return `${title}\n\n${blocks.join("\n\n")}`;
 }
 
-export const buildDigest = buildReport;
-
-const emptyState = () => ({ version: STATE_VERSION, keepAliveAt: null, lastRunAt: null, objects: {} });
+const emptyState = () => ({
+  version: STATE_VERSION,
+  keepAliveAt: null,
+  lastRunAt: null,
+  lastDigestDate: null,
+  objects: {},
+});
 
 /**
  * @returns {Promise<{ releaseId: number | null, state: object }>} `releaseId`
@@ -122,7 +183,7 @@ async function loadState() {
   const found = await readReleaseState();
   if (!found) {
     // No release yet = first run. Empty defaults make every currently-qualifying
-    // unit a "new" trigger, which is the intended behaviour.
+    // object's baseline "unreported", which is the intended behaviour.
     return { releaseId: null, state: emptyState() };
   }
   return {
@@ -142,77 +203,9 @@ function minutesSinceLastRun(state) {
 function emptyObjectState(name) {
   return {
     name,
-    availableCount: null,
-    belowFloorUUIDs: [],
-    lastNotifiedAvailableCount: null,
+    lastReportedMinPrice: null,
+    lastReportedAvailableCount: null,
     failing: false,
-  };
-}
-
-/** Evaluate one object against its previous state. Returns the next state plus
- *  any alert lines this run should send. */
-function evaluate({ object, placements, previous }) {
-  const available = placements.filter(isAvailable);
-  const availableCount = available.length;
-
-  const belowFloor = available
-    .filter((placement) => priceOf(placement) <= PRICE_FLOOR)
-    .sort((a, b) => priceOf(a) - priceOf(b));
-
-  const knownBelowFloor = new Set(previous.belowFloorUUIDs);
-  const newlyBelowFloor = belowFloor.filter((placement) => !knownBelowFloor.has(placement.uuid));
-
-  // Edge-triggered: fire when the count first drops under the threshold, and
-  // again only if it drops further than what was last reported.
-  const lowAvailability = availableCount < AVAILABILITY_THRESHOLD;
-  const notifyAvailability =
-    lowAvailability &&
-    (previous.lastNotifiedAvailableCount === null || availableCount < previous.lastNotifiedAvailableCount);
-
-  const sections = [];
-
-  if (newlyBelowFloor.length > 0) {
-    const lines = [
-      `💰 Новые лоты по цене ≤ ${formatPrice(PRICE_FLOOR)} ₸ — ${newlyBelowFloor.length} шт.:`,
-      ...newlyBelowFloor.slice(0, MAX_UNITS_LISTED).map((placement) => {
-        const details = [
-          placement.floor != null ? `${placement.floor} эт.` : null,
-          placement.square != null ? `${placement.square} м²` : null,
-        ].filter(Boolean);
-        const suffix = details.length > 0 ? ` · ${details.join(" · ")}` : "";
-        return `• №${escapeHtml(placement.name)} — <b>${formatPrice(priceOf(placement))} ₸</b>${suffix}`;
-      }),
-    ];
-    if (newlyBelowFloor.length > MAX_UNITS_LISTED) {
-      lines.push(`• …и ещё ${newlyBelowFloor.length - MAX_UNITS_LISTED}`);
-    }
-    sections.push(lines.join("\n"));
-  }
-
-  if (notifyAvailability) {
-    const was =
-      previous.availableCount !== null && previous.availableCount !== availableCount
-        ? ` (было ${previous.availableCount})`
-        : "";
-    sections.push(
-      `📉 Осталось в продаже: <b>${availableCount}</b>${was} — ниже порога ${AVAILABILITY_THRESHOLD}`,
-    );
-  }
-
-  return {
-    sections,
-    next: {
-      name: object.name,
-      availableCount,
-      belowFloorUUIDs: belowFloor.map((placement) => placement.uuid).sort(),
-      // Reset once the count recovers, so a later re-crossing alerts again.
-      lastNotifiedAvailableCount: notifyAvailability
-        ? availableCount
-        : lowAvailability
-          ? previous.lastNotifiedAvailableCount
-          : null,
-      failing: false,
-    },
   };
 }
 
@@ -229,8 +222,13 @@ async function main() {
 
   const { releaseId, state } = await loadState();
   const gapMinutes = minutesSinceLastRun(state);
+  const astana = getAstanaTime();
+  const digestDue = isDigestDue(astana, state.lastDigestDate);
+  const gapWarningActive = gapMinutes !== null && gapMinutes > RUN_GAP_WARNING_MINUTES;
+
   const nextObjects = { ...state.objects };
-  // Collected for the scan report — one entry per object.
+  // Collected for the report — one entry per object, only included in the
+  // Telegram message when something ends up warranting a send this run.
   const objectResults = [];
 
   for (const object of OBJECTS) {
@@ -241,47 +239,61 @@ async function main() {
       placements = await fetchAllPlacements(object);
     } catch (error) {
       // Never let a fetch failure look like "0 available" — that would fire a
-      // false low-stock alert. Keep the previous numbers and skip evaluation.
+      // false low-stock Change Alert. Keep the previous baseline and skip
+      // evaluation. Only the *first* run an object fails is itself a trigger
+      // (an ongoing failure just rides along on whatever else sends).
       console.error(`[${object.id}] fetch failed: ${error.message}`);
+      const justStartedFailing = !previous.failing;
       nextObjects[object.id] = { ...previous, failing: true };
-      objectResults.push({ object, error });
+      objectResults.push({ object, error, changed: justStartedFailing, justStartedFailing });
       continue;
     }
 
-    const { sections, next } = evaluate({ object, placements, previous });
-    nextObjects[object.id] = next;
+    const evaluated = evaluate({ placements, previous });
+    const justRecovered = previous.failing;
+    const changed = evaluated.priceChanged || evaluated.countChanged || justRecovered;
+    nextObjects[object.id] = { name: object.name, ...evaluated.next, failing: false };
 
     console.log(
-      `[${object.id}] ${placements.length} placements, ${next.availableCount} available, ` +
-        `${next.belowFloorUUIDs.length} at/below ${PRICE_FLOOR}`,
+      `[${object.id}] ${placements.length} placements, ${evaluated.availableCount} available, ` +
+        `min price ${evaluated.minPrice ?? "—"}${changed ? " (changed)" : ""}`,
     );
 
-    if (previous.failing) {
-      sections.unshift("✅ Данные снова доступны");
-    }
-
-    objectResults.push({ object, placements, sections });
+    objectResults.push({ object, evaluated, changed, justRecovered });
   }
 
-  const report = buildReport(objectResults);
-  // The external-cron trigger is what guarantees a run every working hour (native
-  // GitHub `schedule:` is unreliable for this account — see monitor.yml). A large
-  // gap since the last run means that guarantee has silently broken.
-  const gapWarning =
-    gapMinutes !== null && gapMinutes > RUN_GAP_WARNING_MINUTES
+  const anyObjectChanged = objectResults.some((r) => r.changed);
+  const shouldSend = digestDue || gapWarningActive || anyObjectChanged;
+
+  if (shouldSend) {
+    const report = buildReport(objectResults);
+    // The external-cron trigger is what guarantees a run every working hour (native
+    // GitHub `schedule:` is unreliable for this account — see monitor.yml). A large
+    // gap since the last run means that guarantee has silently broken.
+    const gapWarning = gapWarningActive
       ? `⚠️ Предыдущий запуск был ${Math.round(gapMinutes)} мин назад — проверьте внешний cron.\n\n`
       : "";
-  await sendMessage(`${gapWarning}${report}`);
-  console.log("Sent scan report");
+    await sendMessage(`${gapWarning}${report}`);
 
-  const alertCount = objectResults.filter((r) => r.sections?.length > 0).length;
-  if (alertCount > 0) {
-    console.log(`Report includes alerts for ${alertCount} object(s)`);
+    const reasons = [
+      digestDue && "daily digest",
+      anyObjectChanged && "change alert",
+      gapWarningActive && "run-gap watchdog",
+    ].filter(Boolean);
+    console.log(`Sent report (${reasons.join(" + ")})`);
   } else {
-    console.log("No new alert triggers in this scan");
+    console.log("No active Send Trigger this run — nothing sent");
   }
 
-  await saveState({ ...state, objects: nextObjects, lastRunAt: new Date().toISOString() }, releaseId);
+  await saveState(
+    {
+      ...state,
+      objects: nextObjects,
+      lastRunAt: new Date().toISOString(),
+      lastDigestDate: digestDue ? astana.dateString : state.lastDigestDate,
+    },
+    releaseId,
+  );
 }
 
 async function saveState(state, releaseId) {
@@ -293,11 +305,12 @@ async function saveState(state, releaseId) {
     version: STATE_VERSION,
     keepAliveAt: staleKeepAlive ? new Date().toISOString() : state.keepAliveAt,
     lastRunAt: state.lastRunAt,
+    lastDigestDate: state.lastDigestDate,
     objects: state.objects,
   };
   await writeReleaseState(next, releaseId);
 }
 
-// Guarded so the pure helpers above (priceOf, isAvailable) can be imported and
-// exercised without firing a live run.
+// Guarded so the pure helpers above (priceOf, isAvailable, evaluate) can be
+// imported and exercised without firing a live run.
 if (import.meta.main) await main();

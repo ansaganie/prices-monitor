@@ -1,9 +1,16 @@
-// Monitored BI Group real-estate objects.
+// Monitored objects — the listings this price monitor tracks.
 //
 // To add another object: append an entry below. `id` is the stable key used in
 // the persisted run state (see src/release-state.js) — never change it for an
 // existing object, or its alert history resets and you get a duplicate
 // first-run notification. `name` is display-only and safe to edit.
+//
+// Every entry today is shaped for BI Group's public sales-picker API
+// specifically (`realEstateUUIDs` + `propertyTypes`, fetched by
+// src/bi-api.js) — the two complexes below are both BI Group. Tracking a
+// listing from a genuinely different source would need a new fetch adapter,
+// which doesn't exist yet (see docs/adr/0003-scope-bi-group-rebrand-to-docs.md);
+// this file isn't a generic plug-in point until one is built.
 //
 // Finding the UUIDs: open the complex's parking picker in a browser, watch the
 // POST to apigw.bi.group/sales-picker/microfe-v3/placementList in devtools, and
